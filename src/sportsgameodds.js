@@ -1,5 +1,13 @@
 import { config } from './config.js';
 
+function americanOdds(value) {
+  if (value == null) return null;
+  if (typeof value === 'number') return value;
+  const raw = String(value).replace(/[+\s]/g, '');
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function americanToDecimal(american) {
   const n = Number(american);
   if (!Number.isFinite(n) || n === 0) return null;
@@ -8,22 +16,35 @@ function americanToDecimal(american) {
 
 function decimalToAmerican(decimal) {
   if (!Number.isFinite(decimal) || decimal <= 1) return null;
-  return decimal >= 2
-    ? Math.round((decimal - 1) * 100)
-    : Math.round(-100 / (decimal - 1));
+  return decimal >= 2 ? Math.round((decimal - 1) * 100) : Math.round(-100 / (decimal - 1));
+}
+
+function cleanName(s = '') {
+  return String(s)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function pickDeeplink(node) {
+  return node?.deeplink || node?.deepLink || node?.link || node?.url || node?.betLink || node?.sportsbookUrl || null;
+}
+
+function pickOdds(node) {
+  return americanOdds(node?.odds ?? node?.price ?? node?.americanOdds ?? node?.american ?? node?.value);
 }
 
 async function getJson(url, label) {
   const res = await fetch(url, {
-    headers: {
-      'x-api-key': config.apiKey,
-      accept: 'application/json'
-    }
+    headers: { 'x-api-key': config.apiKey, accept: 'application/json' }
   });
 
   const text = await res.text();
-
   let json;
+
   try {
     json = text ? JSON.parse(text) : null;
   } catch {
@@ -40,37 +61,160 @@ async function getJson(url, label) {
 
 export async function fetchMlbEvents() {
   const url = new URL(`${config.apiBase}/events`);
-
   url.searchParams.set('leagueID', config.leagueId);
   url.searchParams.set('oddsAvailable', 'true');
-  url.searchParams.set('includeAltLines', 'true');
-  url.searchParams.set('limit', '1');
+  url.searchParams.set('includeAltLines', String(config.includeAltLines));
+  url.searchParams.set('limit', String(config.eventLimit));
 
-  const events = await getJson(url, 'events');
+  if (config.bookmakerIds.length) {
+    url.searchParams.set('bookmakerID', config.bookmakerIds.join(','));
+  }
 
-  console.log('FULL SAMPLE EVENT:');
-  console.log(JSON.stringify(events[0], null, 2).slice(0, 12000));
+  return getJson(url, 'events');
+}
 
-  return events;
+function entityNameFromEvent(event, statEntityID) {
+  if (!statEntityID) return '';
+
+  const id = String(statEntityID);
+
+  if (id === 'home') return event.teams?.home?.names?.long || event.teams?.home?.names?.medium || 'Home';
+  if (id === 'away') return event.teams?.away?.names?.long || event.teams?.away?.names?.medium || 'Away';
+  if (id === 'all') return 'All';
+
+  const players = event.players;
+  if (!players) return '';
+
+  const player = Array.isArray(players)
+    ? players.find(p => String(p.playerID || p.id || p.statEntityID) === id)
+    : players[id];
+
+  if (!player) return '';
+
+  return player.names?.long || player.names?.medium || player.name || player.fullName || player.displayName || '';
+}
+
+function sideLabel(odd) {
+  if (odd.sideID === 'over') return 'Over';
+  if (odd.sideID === 'under') return 'Under';
+  if (odd.sideID === 'yes') return 'Yes';
+  if (odd.sideID === 'no') return 'No';
+
+  return odd.sideID || odd.side || odd.selection || odd.outcomeName || odd.outcome || odd.betName || odd.label || '';
+}
+
+function lineFromOdd(odd) {
+  return odd.line ?? odd.points ?? odd.handicap ?? odd.spread ?? odd.total ?? odd.value ?? odd.statValue ?? '';
+}
+
+function isHrOverOdd(odd) {
+  const market = String(
+    odd.marketName || odd.marketID || odd.market || odd.statID || ''
+  ).toLowerCase();
+
+  const side = String(sideLabel(odd)).toLowerCase();
+  const line = String(lineFromOdd(odd)).toLowerCase();
+
+  const isHr =
+    market.includes('home run') ||
+    market.includes('homer') ||
+    market.includes('player_home_runs') ||
+    market.includes('batter_home_runs') ||
+    market.includes('total_home_runs') ||
+    market.includes('home_runs');
+
+  const isOver =
+    side === 'over' ||
+    side === 'yes' ||
+    side.includes('over') ||
+    side.includes('yes') ||
+    line === '0.5' ||
+    line.includes('0.5');
+
+  return isHr && isOver;
+}
+
+function extractHrRows(event) {
+  const rows = [];
+
+  if (!event.odds || typeof event.odds !== 'object' || Array.isArray(event.odds)) {
+    return rows;
+  }
+
+  for (const [oddID, odd] of Object.entries(event.odds)) {
+    if (!odd || typeof odd !== 'object') continue;
+    if (!isHrOverOdd(odd)) continue;
+
+    const statEntityID = odd.statEntityID || odd.entityID || odd.participantID || '';
+    const playerName =
+      odd.playerName ||
+      odd.player ||
+      odd.participantName ||
+      odd.participant ||
+      odd.entityName ||
+      entityNameFromEvent(event, statEntityID);
+
+    if (!playerName) continue;
+
+    const byBookmaker = odd.byBookmaker;
+    if (!byBookmaker || typeof byBookmaker !== 'object') continue;
+
+    for (const [bookIdRaw, bookNode] of Object.entries(byBookmaker)) {
+      const bookId = String(bookIdRaw).toLowerCase();
+
+      if (config.bookmakerIds.length && !config.bookmakerIds.includes(bookId)) continue;
+      if (!bookNode || bookNode.available === false) continue;
+
+      const price = pickOdds(bookNode);
+      if (price == null) continue;
+
+      rows.push({
+        player: playerName,
+        book: bookId,
+        price,
+        link: pickDeeplink(bookNode) || pickDeeplink(odd) || event.links?.bookmakers?.[bookId] || null,
+        event: event.name || event.eventName || event.eventID || '',
+        raw: odd
+      });
+    }
+  }
+
+  return rows;
 }
 
 export async function findHrOddsForPlayers(players) {
   const events = await fetchMlbEvents();
+  const all = events.flatMap(extractHrRows);
 
   console.log(`SportsGameOdds events loaded: ${events.length}`);
-  console.log('DEBUG MODE: not searching props yet');
+  console.log(`HR rows found: ${all.length}`);
 
-  return players.map(player => ({
-    player,
-    matches: [],
-    best: null
-  }));
+  if (all.length) {
+    console.log('Sample HR row:', JSON.stringify(all[0], null, 2).slice(0, 1500));
+  }
+
+  return players.map(player => {
+    const target = cleanName(player);
+
+    const matches = all.filter(row => {
+      const candidate = cleanName(row.player);
+      return candidate === target || candidate.includes(target) || target.includes(candidate);
+    });
+
+    matches.sort((a, b) => b.price - a.price);
+
+    console.log(`Searching ${player}: ${matches.length} HR matches`);
+
+    return {
+      player,
+      matches,
+      best: matches[0] || null
+    };
+  });
 }
 
 export function estimateParlayAmerican(bestLegs) {
-  const decimals = bestLegs
-    .map(l => americanToDecimal(l?.price))
-    .filter(Boolean);
+  const decimals = bestLegs.map(l => americanToDecimal(l?.price)).filter(Boolean);
 
   if (!decimals.length || decimals.length !== bestLegs.length) {
     return null;
