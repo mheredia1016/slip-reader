@@ -1,12 +1,13 @@
 import sharp from 'sharp';
 import { createWorker } from 'tesseract.js';
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 
 let workerPromise;
 
 async function worker() {
-  if (!workerPromise) {
-    workerPromise = createWorker('eng');
-  }
+  if (!workerPromise) workerPromise = createWorker('eng');
   return workerPromise;
 }
 
@@ -16,89 +17,81 @@ async function runOcr(input) {
   return data?.text || '';
 }
 
-async function imageBuffer(url) {
+async function downloadImage(url) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Image download failed: ${res.status}`);
   return Buffer.from(await res.arrayBuffer());
 }
 
-function uniqueLines(texts) {
-  const seen = new Set();
-  const lines = [];
+async function saveTemp(buffer, name) {
+  const file = path.join(os.tmpdir(), `${Date.now()}-${name}.png`);
+  await fs.writeFile(file, buffer);
+  return file;
+}
 
-  for (const text of texts) {
-    for (const line of String(text).split(/\r?\n/)) {
-      const clean = line.replace(/\s+/g, ' ').trim();
-      if (!clean) continue;
-      const key = clean.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      lines.push(clean);
-    }
-  }
-
-  return lines.join('\n');
+function mergeTexts(texts) {
+  return texts
+    .filter(Boolean)
+    .join('\n')
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(Boolean)
+    .join('\n');
 }
 
 export async function ocrImage(url) {
-  const original = await imageBuffer(url);
-  const meta = await sharp(original).metadata();
-
-  const width = meta.width || 1000;
-  const height = meta.height || 1000;
-
-  const cropTop = Math.round(height * 0.12);
-  const cropHeight = Math.round(height * 0.76);
-
-  const normal = await sharp(original)
-    .resize({ width: Math.max(1400, width * 2) })
-    .png()
-    .toBuffer();
-
-  const cropped = await sharp(original)
-    .extract({
-      left: 0,
-      top: cropTop,
-      width,
-      height: cropHeight
-    })
-    .resize({ width: Math.max(1600, width * 2.5) })
-    .png()
-    .toBuffer();
-
-  const contrast = await sharp(original)
-    .grayscale()
-    .normalize()
-    .linear(1.35, -20)
-    .resize({ width: Math.max(1600, width * 2.5) })
-    .png()
-    .toBuffer();
-
-  const croppedContrast = await sharp(original)
-    .extract({
-      left: 0,
-      top: cropTop,
-      width,
-      height: cropHeight
-    })
-    .grayscale()
-    .normalize()
-    .linear(1.5, -25)
-    .resize({ width: Math.max(1800, width * 3) })
-    .png()
-    .toBuffer();
-
   const texts = [];
 
-  for (const img of [normal, cropped, contrast, croppedContrast]) {
-    try {
-      texts.push(await runOcr(img));
-    } catch (err) {
-      console.error('OCR pass failed:', err.message);
-    }
+  // Original method that was working
+  try {
+    const originalText = await runOcr(url);
+    texts.push(originalText);
+  } catch (err) {
+    console.error('Original OCR failed:', err.message);
   }
 
-  const merged = uniqueLines(texts);
+  try {
+    const original = await downloadImage(url);
+    const meta = await sharp(original).metadata();
+
+    const width = meta.width || 1000;
+    const height = meta.height || 1000;
+
+    const enhanced = await sharp(original)
+      .resize({ width: Math.max(width * 2, 1400) })
+      .grayscale()
+      .normalize()
+      .sharpen()
+      .png()
+      .toBuffer();
+
+    const enhancedPath = await saveTemp(enhanced, 'enhanced');
+    texts.push(await runOcr(enhancedPath));
+
+    const cropTop = Math.floor(height * 0.08);
+    const cropHeight = Math.floor(height * 0.84);
+
+    const cropped = await sharp(original)
+      .extract({
+        left: 0,
+        top: cropTop,
+        width,
+        height: cropHeight
+      })
+      .resize({ width: Math.max(width * 2, 1400) })
+      .grayscale()
+      .normalize()
+      .sharpen()
+      .png()
+      .toBuffer();
+
+    const croppedPath = await saveTemp(cropped, 'cropped');
+    texts.push(await runOcr(croppedPath));
+  } catch (err) {
+    console.error('Enhanced OCR failed:', err.message);
+  }
+
+  const merged = mergeTexts(texts);
 
   console.log('OCR TEXT:\n' + merged);
 
