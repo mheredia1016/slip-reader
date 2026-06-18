@@ -1,1 +1,19 @@
-{"name":"hr-slip-link-bot","version":"1.0.0","type":"module","main":"src/index.js","scripts":{"start":"node src/index.js"},"dependencies":{"@discordjs/rest":"^2.4.0","discord.js":"^14.16.3","dotenv":"^16.4.7","sharp": "^0.33.5","tesseract.js":"^5.1.1"},"engines":{"node":">=20"}}
+{
+  "name": "hr-slip-link-bot",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@discordjs/rest": "^2.4.0",
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.7",
+    "sharp": "^0.33.5",
+    "tesseract.js": "^5.1.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
