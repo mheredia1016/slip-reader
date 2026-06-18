@@ -107,15 +107,38 @@ function lineFromOdd(odd) {
   return odd.line ?? odd.points ?? odd.handicap ?? odd.spread ?? odd.total ?? odd.value ?? odd.statValue ?? '';
 }
 
+function isBadHrMarket(market) {
+  return (
+    market.includes('first') ||
+    market.includes('1st') ||
+    market.includes('first_home_run') ||
+    market.includes('first home run') ||
+    market.includes('first team') ||
+    market.includes('team to hit') ||
+    market.includes('race to') ||
+    market.includes('inning') ||
+    market.includes('most home runs') ||
+    market.includes('team_home_runs') ||
+    market.includes('team home runs')
+  );
+}
+
 function isHrOverOdd(odd) {
   const market = String(
     odd.marketName || odd.marketID || odd.market || odd.statID || ''
   ).toLowerCase();
 
+  if (isBadHrMarket(market)) return false;
+
   const side = String(sideLabel(odd)).toLowerCase();
   const line = String(lineFromOdd(odd)).toLowerCase();
 
   const isHr =
+    market === 'batting_homeruns' ||
+    market === 'batting_homeRuns'.toLowerCase() ||
+    market.includes('batting_homeruns') ||
+    market.includes('batting_homeruns') ||
+    market.includes('batting_home_runs') ||
     market.includes('home run') ||
     market.includes('homer') ||
     market.includes('player_home_runs') ||
@@ -168,6 +191,16 @@ function extractHrRows(event) {
       const price = pickOdds(bookNode);
       if (price == null) continue;
 
+      const overUnder =
+        bookNode.overUnder ??
+        bookNode.bookOverUnder ??
+        odd.bookOverUnder ??
+        odd.overUnder ??
+        odd.line ??
+        odd.value;
+
+      if (Number(overUnder) !== 0.5) continue;
+
       rows.push({
         player: playerName,
         book: bookId,
@@ -190,7 +223,7 @@ export async function findHrOddsForPlayers(players) {
   console.log(`HR rows found: ${all.length}`);
 
   if (all.length) {
-    console.log('Sample HR row:', JSON.stringify(all[0], null, 2).slice(0, 1500));
+    console.log('Sample HR row:', JSON.stringify(all[0], null, 2).slice(0, 1000));
   }
 
   return players.map(player => {
